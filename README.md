@@ -11,3 +11,8 @@ illustrate mpp backwards about stragglers https://laptrinhx.com/apache-hawq-next
 
 MPP stragglers: If one node is constantly performing slower than the others, the whole engine performance is limited by the performance of this problematic node, regardless the cluster size.
 
+**hash join**
+
+smaller one as outer: litte refinement
+
+hash table to smaller one(tradeoff: the effective block size of R is reduced)
