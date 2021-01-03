@@ -30,7 +30,7 @@ type Record struct {
 
 type Records struct {
 	records []Record
-	mu      sync.RWMutex
+	mu      sync.Mutex
 }
 
 type Count struct {
@@ -40,13 +40,19 @@ type Count struct {
 	cntCh    chan bool
 }
 
-type Workload struct {
+type Worker struct {
 	records []Records
-	other   *Workload
-	state   StateType
+	other   *Waiter
+	synCh   chan bool // between worker and waiter
+	cnt     Count
+}
+
+type Waiter struct {
+	other   *Worker
 	synCh   chan bool // between worker and waiter
 	finCh   chan int  // indicate both have finished
 	cnt     Count
+	matches int
 }
 
 func fileSeparate(filePrefix string, fileNames []string, regex *regexp.Regexp) ([]string, []string) {
@@ -62,7 +68,7 @@ func fileSeparate(filePrefix string, fileNames []string, regex *regexp.Regexp) (
 	return wanted, rest
 }
 
-func (w *Workload) fileReader(fileName string) {
+func fileReader(fileName string) [hashLimit][]Record {
 	file, err := os.Open(fileName)
 	if err != nil {
 		log.Fatal(err)
@@ -85,66 +91,71 @@ func (w *Workload) fileReader(fileName string) {
 		}
 		records[record.a%hashLimit] = append(records[record.a%hashLimit], record)
 	}
-	for i := 0; i < hashLimit; i++ {
-		w.records[i].mu.Lock()
-		w.records[i].records = append(w.records[i].records, records[i]...)
-		w.records[i].mu.Unlock()
-	}
-
-	w.cnt.mu.Lock()
-	defer w.cnt.mu.Unlock()
-	if w.cnt.count++; w.cnt.count >= w.cnt.cntLimit {
-		w.cnt.cntCh <- true
-	}
+	return records
 }
 
-func (w *Workload) startWorker(fileNames []string) {
-	w.state = WORKER
+func (w *Worker) startWorker(fileNames []string) {
 	cntCh := make(chan bool)
 	w.cnt = Count{count: 0, cntLimit: len(fileNames), cntCh: cntCh}
 	for _, fileName := range fileNames {
-		go w.fileReader(fileName)
+		go func(fileName string) {
+			records := fileReader(fileName)
+			for i := 0; i < hashLimit; i++ {
+				w.records[i].mu.Lock()
+				w.records[i].records = append(w.records[i].records, records[i]...)
+				w.records[i].mu.Unlock()
+			}
+
+			w.cnt.mu.Lock()
+			defer w.cnt.mu.Unlock()
+			if w.cnt.count++; w.cnt.count >= w.cnt.cntLimit {
+				w.cnt.cntCh <- true
+			}
+		}(fileName)
 	}
 	<-w.cnt.cntCh   // block until finish all reads from file
 	w.synCh <- true // to waiter
 }
 
-func (w *Workload) startWaiter(fileNames []string) {
-	w.state = WAITER
+func (w *Waiter) startWaiter(fileNames []string) {
 	cntCh := make(chan bool)
-	w.cnt = Count{count: 0, cntLimit: len(fileNames), cntCh: cntCh}
+	startCh := make(chan bool)
+	fileLen := len(fileNames)
+	w.cnt = Count{count: 0, cntLimit: fileLen, cntCh: cntCh}
+
 	for _, fileName := range fileNames {
-		go w.fileReader(fileName)
-	}
-	<-w.cnt.cntCh
-	<-w.synCh
-	matches := 0
-	times := 0
-	mu := sync.Mutex{}
-	for i := 0; i < hashLimit; i++ {
-		go func(idx int) {
-			match := 0
-			for _, record := range w.records[idx].records {
-				for _, counterpart := range w.other.records[idx].records {
-					if record.a == counterpart.a && record.b > counterpart.b {
-						match++
+		go func(fileName string) {
+			records := fileReader(fileName)
+			<-startCh
+			matches := 0
+			for idx := 0; idx < hashLimit; idx++ {
+				for _, record := range records[idx] {
+					for _, counterpart := range w.other.records[idx].records {
+						if record.a == counterpart.a && record.b > counterpart.b {
+							matches++
+						}
 					}
 				}
 			}
-			mu.Lock()
-			defer mu.Unlock()
-			matches += match
-			times++
-			if times >= hashLimit {
-				w.finCh <- matches
+			w.cnt.mu.Lock()
+			defer w.cnt.mu.Unlock()
+			w.matches += matches
+			if w.cnt.count++; w.cnt.count >= w.cnt.cntLimit {
+				w.finCh <- w.matches
+				w.cnt.cntCh <- true
 			}
-		}(i)
+		}(fileName)
 	}
+	<-w.synCh
+	for i := 0; i < fileLen; i++ {
+		startCh <- true
+	}
+	<-w.cnt.cntCh
 }
 
-func main() {
+func start(datadir string) {
 	pwd, _ := os.Getwd()
-	dataFilePath := filepath.Join(pwd, "data")
+	dataFilePath := filepath.Join(pwd, datadir)
 	filePathNames, err := ioutil.ReadDir(dataFilePath)
 	if err != nil {
 		log.Fatal(err)
@@ -160,23 +171,21 @@ func main() {
 
 	synCh := make(chan bool)
 	finCh := make(chan int)
-	w1 := &Workload{synCh: synCh, finCh: finCh}
-	w2 := &Workload{synCh: synCh, finCh: finCh}
+	w1 := &Worker{synCh: synCh}
+	w2 := &Waiter{synCh: synCh, finCh: finCh}
 	w1.other = w2
 	w2.other = w1
 
 	for i := 0; i < hashLimit; i++ {
 		w1.records = append(w1.records, Records{})
-		w2.records = append(w2.records, Records{})
 	}
 
 	if len(t1Files) < len(t2Files) {
 		go w1.startWorker(t1Files)
 		go w2.startWaiter(t2Files)
-		fmt.Println(<-w2.finCh)
 	} else {
-		go w2.startWorker(t2Files)
-		go w1.startWaiter(t1Files)
-		fmt.Println(<-w1.finCh)
+		go w1.startWorker(t2Files)
+		go w2.startWaiter(t1Files)
 	}
+	fmt.Println(<-w2.finCh)
 }
