@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 type StateType int32
@@ -45,6 +46,7 @@ type Worker struct {
 	other   *Waiter
 	synCh   chan bool // between worker and waiter
 	cnt     Count
+	tw      time.Duration
 }
 
 type Waiter struct {
@@ -53,6 +55,7 @@ type Waiter struct {
 	finCh   chan int  // indicate both have finished
 	cnt     Count
 	matches int
+	tw      time.Duration
 }
 
 func fileSeparate(filePrefix string, fileNames []string, regex *regexp.Regexp) ([]string, []string) {
@@ -100,11 +103,13 @@ func (w *Worker) startWorker(fileNames []string) {
 	for _, fileName := range fileNames {
 		go func(fileName string) {
 			records := fileReader(fileName)
+			t1 := time.Now()
 			for i := 0; i < hashLimit; i++ {
 				w.records[i].mu.Lock()
 				w.records[i].records = append(w.records[i].records, records[i]...)
 				w.records[i].mu.Unlock()
 			}
+			w.tw += time.Since(t1)
 
 			w.cnt.mu.Lock()
 			defer w.cnt.mu.Unlock()
@@ -147,10 +152,12 @@ func (w *Waiter) startWaiter(fileNames []string) {
 		}(fileName)
 	}
 	<-w.synCh
+	t1 := time.Now()
 	for i := 0; i < fileLen; i++ {
 		startCh <- true
 	}
 	<-w.cnt.cntCh
+	w.tw = time.Since(t1)
 }
 
 func start(datadir string) {
@@ -187,5 +194,5 @@ func start(datadir string) {
 		go w1.startWorker(t2Files)
 		go w2.startWaiter(t1Files)
 	}
-	fmt.Println(<-w2.finCh)
+	fmt.Println(<-w2.finCh, w1.tw, w2.tw)
 }

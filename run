@@ -1,0 +1,19 @@
+#!/bin/bash
+
+t1=(250000 100000 50000 10000 5000 1000)
+t2=(100000 10000 1000)
+
+for (( i=0; i<${#t2[@]}; i++)) do
+    for (( j=0; j<${#t1[@]}; j++)) do
+        python3 data_gen.py --t1-size 5000000 --t1-conflict-ratio ${t1[j]} --t2-size 5000000 --t2-conflict-ratio ${t2[i]}
+        echo t1 $[5000000/${t1[j]}] t2 $[5000000/${t2[i]}] >> test
+        for (( k=0; k<3; k++)) do
+            go test -bench SMP > tmp
+            arr=`cat tmp | head -n 1`
+            IFS=' ' read -a array <<< $arr
+            echo "${array[1]}" "${array[2]}" >> test
+            array=`cat tmp | tail -n 1 | tr -cd "[0-9].[0-9]" `
+            echo $array"s" >> test
+        done;
+    done;
+done;

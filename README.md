@@ -14,6 +14,7 @@
 - data_gen.py 可通过 `python3 data_gen.py --t1-size xxx --t1-conflict-ratio yyy -t2-size zzz ` 在当前目录下生成测试数据集：创建 `data` 文件夹并生成 t1-x.csv 和 t2-x.csv 文件（每个文件中有 125, 000 条数据），`--t1(2)-size` 为 optional，指示 t1/t2-x.csv 文件共有多少行，默认 1,000,000 行，`--t1-conflict-ratio` 也为 optional，指示 t1 中 a 列 distinct values(t1_size / t1_conflict_ratio) 的数目，默认为 100。
 - smpworker.go 为采用 SMP 架构的算法实现：从 t1 和 t2 文件中选出小的文件来通过取模（modulo 为 101）运算创建 hash table，大的文件同时从文件中读出内容，创建完成后，将大的文件中读出的行与创建好的 hash table 进行匹配。
 - smpworker_test.go 为测试文件。
+- run 为半自动化测试脚本，count.py 为统计脚本
 
 ## Answer
 
@@ -29,45 +30,45 @@
 
 - 请分析并测试各个表中 a 的 number of distinct values 对该算法性能的影响
 
-  假设 t2 的数据规模 <= t1，则当前算法会**选择 t2 建立 hash table**，当 t2 中的 number of distinct values 的数目 >> hashLimit（modulo）时，hashLimit 足够大，则可以保证 t2 在 hash table 的每个 slot 中分布足够均匀，此时 t1 number of distinct values 的变化对算法性能影响不大；
+  假设 t2 的数据规模 <= t1，则当前算法会**选择 t2 建立 hash table**，当 t2 中的 number of distinct values 的数目 >> hashLimit（modulo）时，则 t2 在 hash table 的每个 slot 中分布足够均匀，此时 t1 number of distinct values 的变化对算法性能影响不大。
 
-  当 t2 中的 number of distinct values 的数目（设为 $d_2$） $\approx$ hashLimit（modulo）时，假设 $y_i$ 为 t1 在第 i 个 slot 中出现的频率，可有 $y_1+...y_{\mbox{modulo}} = 1$，则 t1 与 t2 匹配需要 $\frac{y_1+...+y_{d_2}}{d_2}t_1t_2$ 次，假设 t1 均匀分布，则可推出需要 $\frac{t_1t_2}{\mbox{modulo}}$，**因此 t2 number of distinct values 的变化对于算法影响不大。**
+  类似可以推出当 t2 中的 number of distinct values 的数目（设为 $d_2$） $\approx$ hashLimit（modulo）时，假设 $y_i$ 为 t1 在第 i 个 slot 中出现的频率，可有 $y_1+...y_{\mbox{modulo}} = 1$，则 t1 与 t2 匹配需要 $\frac{y_1+...+y_{d_2}}{d_2}t_1t_2$ 次，假设 t1 均匀分布，则可推出需要 $\frac{t_1t_2}{\mbox{modulo}}$，t1 number of distinct values 的变化对于算法影响不大。
 
-  当 t1 中的 number of distinct values 的数目 > hashLimit（modulo）时，hashLimit 足够大，则可以保证 t2 在 hash table 中分布足够均匀，对算法性能应该影响不大
+  当 t2 中的 number of distinct values 的数目（设为 $d_2 = \min(modulo, \mbox{real } d_2)$） $\approx$ hashLimit（modulo）时，假设 $y_i$ 为 t1 在第 i 个 slot 中出现的频率，可有 $y_1+...y_{\mbox{modulo}} = 1$，则 t1 与 t2 匹配需要 $\frac{y_1+...+y_{d_2}}{d_2}t_1t_2$ 次，假设 t1 均匀分布，则可推出需要 $\frac{t_1t_2}{\mbox{modulo}}$，**因此 t1 number of distinct values 的变化对于算法影响不大。**
 
-  当 t1 与 t2 均有 5,000,000 行时，且 t2 number of distinct values  为 5000 时
+  与下述实验结果不符合，目前暂时没想明白如何解释实验数据。
   
-  | t1 number of distinct values | time to finish |
-  | :--------------------------: | :------------: |
-  |              20              |    93.240s     |
-  |              50              |    90.379s     |
-  |             100              |    90.834s     |
-  |             500              |    94.608s     |
-  |             1000             |    96.929s     |
-  |             5000             |    98.780s     |
+  | t1 number of distinct values |        |         | time to finish |
+  | :--------------------------: | :----: | :-----: | :------------: |
+  |              20              | 6.027s | 69.238s |    70.017s     |
+  |              50              | 3.217s | 69.465s |    70.223s     |
+  |             100              | 6.030s | 69.283s |    70.048s     |
+  |             500              | 6.402s | 69.518s |    70.265s     |
+  |             1000             | 5.401s | 69.497s |    70.284s     |
+  |             5000             | 6.018s | 69.471s |    70.242s     |
   
 
 当 t1 与 t2 均有 5,000,000 行时，且 t2 number of distinct values  为 500 时
 
-| t1 number of distinct values | time to finish |
-| :--------------------------: | :------------: |
-|              20              |    161.580s    |
-|              50              |    162.514s    |
-|             100              |    176.292s    |
-|             500              |    181.825s    |
-|             1000             |    123.348s    |
-|             5000             |    89.618s     |
+| t1 number of distinct values | time to establish hash table | time to match | time to finish |
+| :--------------------------: | :--------------------------: | :-----------: | :------------: |
+|              20              |            2.849s            |   183.357s    |    184.093s    |
+|              50              |            4.575s            |   186.018s    |    186.806s    |
+|             100              |            2.173s            |   185.765s    |    186.557s    |
+|             500              |            5.117s            |   189.139s    |    189.915s    |
+|             1000             |            4.505s            |   120.073s    |    120.846s    |
+|             5000             |            2.172s            |    69.626s    |    70.413s     |
 
 当 t1 与 t2 均有 5,000,000 行时，且 t2 number of distinct values  为 50 时
 
-| t1 number of distinct values | time to finish |
-| :--------------------------: | :------------: |
-|              20              |    350.046s    |
-|              50              |    351.503s    |
-|             100              |    175.755s    |
-|             500              |    101.284s    |
-|             1000             |    92.684s     |
-|             5000             |    83.845s     |
+| t1 number of distinct values | time to establish hash table | time to match | time to finish |
+| :--------------------------: | :--------------------------: | :-----------: | :------------: |
+|              20              |            6.352s            |   350.436s    |    354.173s    |
+|              50              |            5.177s            |   346.956s    |    347.691s    |
+|             100              |            4.822s            |   176.386s    |    177.135s    |
+|             500              |            3.671s            |    82.440s    |    83.178s     |
+|             1000             |            4.419s            |    78.164s    |    78.933s     |
+|             5000             |             4.1s             |    66.411s    |    67.150s     |
 
 - 请思考并列举出所有能想到的做法，越多越好。描述他们的优劣点，适用的场景，什么场景下执行的快，什么场景下执行的慢
 
